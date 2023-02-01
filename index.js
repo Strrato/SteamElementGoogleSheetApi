@@ -112,10 +112,16 @@ app.get('/api/sheetdata/:userId/:sheet/:range', (req, res) => {
     }
 
     let user = Db.getUser(userId);
-    if (!user.user || !user.refresh_token){
+    if (!user.user || !user.refresh_token || !user.access_token){
         res.status(400).send('Authentification required');
         return;
     }
+
+    oauth2Client.setCredentials({
+        refresh_token: user.refresh_token,
+        access_token: user.access_token,
+        scope: 'https://www.googleapis.com/auth/spreadsheets'
+    });
 
     callGoogleSheetApi(user, sheet, range).then(data => {
         res.status(200).send(JSON.stringify(data));
@@ -127,32 +133,41 @@ app.get('/api/sheetdata/:userId/:sheet/:range', (req, res) => {
 
 function callGoogleSheetApi(user, sheet, range){
     return new Promise((resolve, reject) => {
-        console.log('Call Google api for sheet', sheet);
-        console.log('Range : ', range);
-        fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheet}/values/${range}`,
-        {
-            headers: {
-                "Content-Type": "application/json",
-                Authorization: `Bearer ${user.access_token}`  
-            }
-        })
-        .then(response => response.json())
-        .then(data => {
-            if (Utils.defined(data.error)){
-                if (data.error.code === 401){
+
+        oauth2Client.getAccessToken().then(res => {
+            if (res.token){
+                console.log('Call Google api for sheet', sheet);
+                console.log('Range : ', range);
+                fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheet}/values/${range}`,
+                {
+                    headers: {
+                        "Content-Type": "application/json",
+                        Authorization: `Bearer ${res.token}`  
+                    }
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (Utils.defined(data.error)){
+                        if (data.error.code === 401){
+                            console.log('Google api error : ', data.error.message);
+                            Db.removeUser(user.user);
+                        }
+
+                        reject(data.error.message);
+                    }
+                    resolve(data);
+                })
+                .catch(err => {
+                    console.log('Google api error : ', err);
                     Db.removeUser(user.user);
                     reject('Authentification required');
-                }
-                reject(data.error.message);
-            }
+                });
 
-            resolve(data);
-        })
-        .catch(err => {
-            console.log('Google api error : ', err);
+            }
+        }, error => {
+            console.log('refresh token error : ', error);
             Db.removeUser(user.user);
             reject('Authentification required');
         });
-
     });
 }
