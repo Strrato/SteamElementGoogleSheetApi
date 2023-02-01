@@ -21,6 +21,7 @@ const scopes = [
 
 const Authurl = oauth2Client.generateAuthUrl({
     access_type: 'offline',
+    prompt: 'consent',
     scope: scopes
 });
 
@@ -113,7 +114,7 @@ app.get('/api/sheetdata/:userId/:sheet/:range', (req, res) => {
 
     let user = Db.getUser(userId);
     if (!user.user || !user.refresh_token || !user.access_token){
-        res.status(400).send('Authentification required');
+        res.status(400).send('Authentication required');
         return;
     }
 
@@ -126,48 +127,70 @@ app.get('/api/sheetdata/:userId/:sheet/:range', (req, res) => {
     callGoogleSheetApi(user, sheet, range).then(data => {
         res.status(200).send(JSON.stringify(data));
     }, error => {
-        res.status(400).send(error);
+        res.status(401).send(error);
     })
-
 });
 
 function callGoogleSheetApi(user, sheet, range){
     return new Promise((resolve, reject) => {
 
-        oauth2Client.getAccessToken().then(res => {
-            if (res.token){
-                console.log('Call Google api for sheet', sheet);
-                console.log('Range : ', range);
-                fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheet}/values/${range}`,
-                {
-                    headers: {
-                        "Content-Type": "application/json",
-                        Authorization: `Bearer ${res.token}`  
+        getAccessToken(user).then(token => {
+            console.log('Call Google api for sheet', sheet);
+            console.log('Range : ', range);
+            fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheet}/values/${range}`,
+            {
+                headers: {
+                    "Content-Type": "application/json",
+                    Authorization: `Bearer ${token}`  
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (Utils.defined(data.error)){
+                    if (data.error.code === 401){
+                        console.log('Google api 401 : ', data.error.message);
                     }
-                })
-                .then(response => response.json())
-                .then(data => {
-                    if (Utils.defined(data.error)){
-                        if (data.error.code === 401){
-                            console.log('Google api error : ', data.error.message);
-                            Db.removeUser(user.user);
-                        }
 
-                        reject(data.error.message);
-                    }
-                    resolve(data);
-                })
-                .catch(err => {
-                    console.log('Google api error : ', err);
-                    Db.removeUser(user.user);
-                    reject('Authentification required');
-                });
-
-            }
+                    reject(data.error.message);
+                }
+                resolve(data);
+            })
+            .catch(err => {
+                console.log('Google api error : ', err);
+                reject('Authentication required');
+            });
         }, error => {
             console.log('refresh token error : ', error);
             Db.removeUser(user.user);
-            reject('Authentification required');
+            reject(error);
         });
+    });
+}
+
+function getAccessToken(user){
+    return new Promise((resolve, reject) => {
+        fetch('https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=' + user.access_token)
+        .then(res => res.json())
+        .then(data => {
+            if (Utils.defined(data.error_description)){
+                oauth2Client.refreshAccessToken().then(token => {
+                    if (Utils.defined(token.credentials) && token.credentials.access_token){
+                        console.log('Access token refreshed');
+                        Db.updateAccessToken(user.user, token.credentials.access_token);
+                        resolve(token.credentials.access_token);
+                    }else {
+                        reject('Unable to refresh token, authentication required');
+                    }
+                }, error => {
+                    console.log('token refresh error', error);
+                    reject('Error while attempting to refresh the token');
+                })
+            }else {
+                resolve(user.access_token);
+            }
+        })
+        .catch(err => {
+            console.log('validate token error', err);
+        })
     });
 }
